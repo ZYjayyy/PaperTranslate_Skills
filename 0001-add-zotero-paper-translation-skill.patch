@@ -1,0 +1,560 @@
+From 5295244106adf63bdd1c378ee9a121f5b044e7d2 Mon Sep 17 00:00:00 2001
+From: ZYjayyy <2658374215@qq.com>
+Date: Fri, 5 Jun 2026 22:51:38 +0800
+Subject: [PATCH] Add Zotero paper translation skill
+
+---
+ .gitignore                                    |   3 +
+ .../paper-translate-zotero/SKILL.md           |  79 +++++++++
+ .../paper-translate-zotero/agents/openai.yaml |   4 +
+ .../references/translation-guidelines.md      |  80 +++++++++
+ .../scripts/extract_pdf_source_map.py         | 154 ++++++++++++++++++
+ .../scripts/render_markdown_to_pdf.py         | 103 ++++++++++++
+ .../scripts/zotero_connector_import.py        |  70 ++++++++
+ 7 files changed, 493 insertions(+)
+ create mode 100644 .gitignore
+ create mode 100644 paper-translate-zotero/paper-translate-zotero/SKILL.md
+ create mode 100644 paper-translate-zotero/paper-translate-zotero/agents/openai.yaml
+ create mode 100644 paper-translate-zotero/paper-translate-zotero/references/translation-guidelines.md
+ create mode 100644 paper-translate-zotero/paper-translate-zotero/scripts/extract_pdf_source_map.py
+ create mode 100644 paper-translate-zotero/paper-translate-zotero/scripts/render_markdown_to_pdf.py
+ create mode 100644 paper-translate-zotero/paper-translate-zotero/scripts/zotero_connector_import.py
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..2e76000
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,3 @@
++work-smoke/
++.paper-translate-browser-profile/
++__pycache__/
+diff --git a/paper-translate-zotero/paper-translate-zotero/SKILL.md b/paper-translate-zotero/paper-translate-zotero/SKILL.md
+new file mode 100644
+index 0000000..161ff04
+--- /dev/null
++++ b/paper-translate-zotero/paper-translate-zotero/SKILL.md
+@@ -0,0 +1,79 @@
++---
++name: paper-translate-zotero
++description: Use when translating full research papers from Zotero attachments or local PDFs into paragraph-level Chinese-English Markdown readers, enforcing a shared terminology table across multiple papers, exporting readable PDF versions, and optionally importing generated PDFs back into Zotero through the local Connector.
++---
++
++# Paper Translate Zotero
++
++## Overview
++
++Create source-grounded full-paper translations from Zotero or local PDFs. The default deliverable is a paragraph-level bilingual Markdown reader plus a PDF version that can be opened inside Zotero.
++
++Use this skill for requests such as:
++
++- "把 Zotero 里的这些论文做全文翻译"
++- "把几篇论文翻译成中英对照，并保持术语一致"
++- "将翻译好的文件转成 PDF 并导入 Zotero"
++- "从本地 PDF 文件夹批量生成论文翻译 reader"
++
++Do not replace the output with a summary unless the user explicitly asks for a summary.
++
++## Workflow
++
++1. Resolve sources.
++   - If the user names Zotero, first use the Zotero skill/helper to check `status --json`, search items, list children, and get PDF `file-url`s.
++   - If the user gives local PDFs, treat those as the source files.
++   - Keep Zotero writes explicit. Read operations are safe; imports are library writes.
++
++2. Build a source map before translating.
++   - Use `scripts/extract_pdf_source_map.py` or an equivalent PDF parser.
++   - Preserve page numbers, stable block IDs (`S0001`, `S0002`, ...), original text, and extraction confidence.
++   - For two-column papers, prefer column-aware reading order over raw PDF text order.
++   - Mark tables, figure captions, references, and OCR/layout uncertainty when detected.
++
++3. Translate conservatively.
++   - Produce block-level original/Chinese pairs.
++   - Preserve model names, dataset names, variables, equations, citations, units, and URLs.
++   - Keep hedging and evidence chains; do not rewrite dense methods text into bullets.
++   - Build one shared terminology table for a batch and apply it consistently.
++   - Keep reference entries in original form unless the user asks to translate references; machine translation often corrupts author names and venues.
++
++4. Write deliverables.
++   - For each paper, write:
++     - `paper.md`: bilingual reader
++     - `source_map.json`: source blocks and translations
++     - optional `translation_notes.md`: extraction/model caveats
++   - Write a batch-level `terminology.md` and `translation_report.json`.
++   - Use clear titles such as `中文全文翻译 - <PaperName>`.
++
++5. Export PDFs for Zotero.
++   - Use `scripts/render_markdown_to_pdf.py` when browser-based PDF printing is available.
++   - Verify each PDF exists, has nonzero size, and has a plausible page count.
++   - Prefer PDF over Markdown for Zotero because Zotero can preview PDFs reliably.
++
++6. Import generated PDFs back into Zotero if requested.
++   - Use `scripts/zotero_connector_import.py` or the Zotero Connector endpoint `/connector/saveStandaloneAttachment`.
++   - Import PDF translations with titles such as `中文全文翻译PDF - <PaperName>`.
++   - After import, search Zotero for the title and/or inspect recent items; Zotero may auto-recognize imported PDFs and turn some into new top-level items.
++   - Do not delete old Markdown attachments unless the user explicitly approves the exact paths/items to delete.
++
++## Quality Gates
++
++Before reporting completion, verify:
++
++- every source block has a translation or an intentional note
++- `paper.md` has no `[待翻译]` markers
++- Markdown anchors match `source_map.json` block counts
++- generated PDFs open and have plausible page counts
++- Zotero imports return `201` and are searchable or visible in recent items
++- no obvious model-degeneration patterns remain, such as repeated `LLMLLMLLM` or long repeated initials
++
++If a local machine translation model is used, clearly label the output as a machine-assisted first pass. For publication-quality translation, recommend a human/LLM polishing pass over the generated reader.
++
++## Scripts
++
++- `scripts/extract_pdf_source_map.py`: create page-aware source maps from one or more PDFs.
++- `scripts/render_markdown_to_pdf.py`: render Markdown readers to PDFs with Chrome/Edge headless printing.
++- `scripts/zotero_connector_import.py`: import generated files to Zotero through the local Connector.
++
++Read `references/translation-guidelines.md` when the task needs detailed terminology, table/reference, or verification rules.
+diff --git a/paper-translate-zotero/paper-translate-zotero/agents/openai.yaml b/paper-translate-zotero/paper-translate-zotero/agents/openai.yaml
+new file mode 100644
+index 0000000..524bc90
+--- /dev/null
++++ b/paper-translate-zotero/paper-translate-zotero/agents/openai.yaml
+@@ -0,0 +1,4 @@
++interface:
++  display_name: "Paper Translate Zotero"
++  short_description: "Translate Zotero papers into bilingual Markdown/PDF readers"
++  default_prompt: "Translate these Zotero or local PDF papers into consistent Chinese-English full-paper readers and import the PDFs back into Zotero."
+diff --git a/paper-translate-zotero/paper-translate-zotero/references/translation-guidelines.md b/paper-translate-zotero/paper-translate-zotero/references/translation-guidelines.md
+new file mode 100644
+index 0000000..b6871a9
+--- /dev/null
++++ b/paper-translate-zotero/paper-translate-zotero/references/translation-guidelines.md
+@@ -0,0 +1,80 @@
++# Translation Guidelines
++
++## Reader Structure
++
++Use a block-level bilingual shape:
++
++```markdown
++<a id="S0001"></a>
++**Source:** p.1 S0001
++
++**Original:** ...
++
++**中文:** ...
++```
++
++For section headings:
++
++```markdown
++<a id="S0010"></a>
++### p.3 S0010 3 Method
++
++**中文标题:** 3 方法
++```
++
++## Terminology
++
++Maintain a batch-level table. For robotics and embodied AI papers, these defaults are usually appropriate:
++
++| English | 中文 |
++|---|---|
++| affordance | 可供性 |
++| embodiment | 具身形态 |
++| vision-language-action | 视觉-语言-动作 |
++| vision-language model | 视觉-语言模型 |
++| large language model | 大语言模型 |
++| open-vocabulary | 开放词汇 |
++| object-centric | 以对象为中心 |
++| robot navigation | 机器人导航 |
++| long-horizon | 长时程 |
++| goal-conditioned | 目标条件化 |
++| language-conditioned | 语言条件化 |
++| value function | 价值函数 |
++| semantic map | 语义地图 |
++| submap | 子地图 |
++| zero-shot | 零样本 |
++| modality | 模态 |
++
++Preserve names such as LM-Nav, OmniVLA, SayCan, FindAnything, CLIP, GPT-3, OpenVLA, ViNG, VNM, VLM, LLM, MAV, TSDF, SLAM, and dataset names.
++
++## References and Tables
++
++Keep references in original form by default. If the source block is inside a References/Bibliography section, use:
++
++```markdown
++**中文:** 参考文献条目保留原文，以避免机器翻译扭曲作者、题名、会议名和页码。
++```
++
++For extracted table rows that are mostly abbreviations or metrics, preserve abbreviations and add a compact Chinese note instead of forcing translation.
++
++## PDF Extraction Caveats
++
++Two-column PDFs often interleave left and right columns. Prefer column-aware extraction. If a page contains a wide title/figure/table block, place it before or near the relevant body text, but do not claim exact layout fidelity unless manually verified.
++
++Watch for:
++
++- page headers/footers mixed into text
++- arXiv IDs inserted mid-paragraph
++- figure labels split across columns
++- references mistaken for body text
++- repeated model output such as `LLMLLMLLM...`
++
++## Completion Checks
++
++Run a small audit before delivery:
++
++- count source blocks, translated blocks, Markdown anchors, and pending markers
++- sample beginning, middle, and end sections
++- search for repeated token patterns
++- verify PDF page counts
++- verify Zotero import by title search or recent item inspection
+diff --git a/paper-translate-zotero/paper-translate-zotero/scripts/extract_pdf_source_map.py b/paper-translate-zotero/paper-translate-zotero/scripts/extract_pdf_source_map.py
+new file mode 100644
+index 0000000..5c563d4
+--- /dev/null
++++ b/paper-translate-zotero/paper-translate-zotero/scripts/extract_pdf_source_map.py
+@@ -0,0 +1,154 @@
++#!/usr/bin/env python3
++"""Extract page-aware source maps from research-paper PDFs."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import re
++from pathlib import Path
++
++import fitz
++
++
++SECTION_RE = re.compile(
++    r"^(abstract|introduction|related work|method|methods|approach|experiments?|experimental evaluation|evaluation|results|discussion|conclusion|limitations?|references|bibliography|appendix|acknowledg(?:e)?ments?|supplementary material|"
++    r"\d+\.?\s+[A-Z][A-Za-z0-9 ,:;()/-]{2,})$",
++    re.IGNORECASE,
++)
++
++
++def clean_text(text: str) -> str:
++    text = text.replace("\u00ad", "")
++    text = re.sub(r"-\n(?=[a-z])", "", text)
++    text = re.sub(r"\s+\n", "\n", text)
++    text = re.sub(r"\n\s+", "\n", text)
++    text = re.sub(r"[ \t]+", " ", text)
++    return text.strip()
++
++
++def page_text_in_reading_order(page: fitz.Page) -> str:
++    blocks = []
++    for raw in page.get_text("blocks"):
++        if len(raw) < 5:
++            continue
++        x0, y0, x1, y1, text = raw[:5]
++        text = clean_text(text)
++        if len(text) < 3:
++            continue
++        blocks.append({"x0": x0, "y0": y0, "x1": x1, "text": text})
++    if not blocks:
++        return ""
++
++    width = page.rect.width
++    left = [b for b in blocks if (b["x0"] + b["x1"]) / 2 < width * 0.52]
++    right = [b for b in blocks if (b["x0"] + b["x1"]) / 2 >= width * 0.52]
++    wide = [b for b in blocks if (b["x1"] - b["x0"]) > width * 0.62]
++
++    if len(left) >= 3 and len(right) >= 3:
++        ordered = []
++        consumed: set[int] = set()
++        for b in sorted(wide, key=lambda item: item["y0"]):
++            if b["y0"] < page.rect.height * 0.23:
++                ordered.append(b)
++                consumed.add(id(b))
++        for column in (left, right):
++            for b in sorted(column, key=lambda item: (item["y0"], item["x0"])):
++                if id(b) not in consumed:
++                    ordered.append(b)
++                    consumed.add(id(b))
++        for b in sorted(blocks, key=lambda item: (item["y0"], item["x0"])):
++            if id(b) not in consumed:
++                ordered.append(b)
++    else:
++        ordered = sorted(blocks, key=lambda item: (item["y0"], item["x0"]))
++
++    return "\n\n".join(b["text"] for b in ordered)
++
++
++def split_reading_block(text: str, limit: int) -> list[str]:
++    if len(text) <= limit or (SECTION_RE.match(text) and len(text.split()) <= 10):
++        return [text]
++    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(])", text)
++    chunks: list[str] = []
++    current = ""
++    for sentence in sentences:
++        if len(current) + len(sentence) + 1 <= limit:
++            current = f"{current} {sentence}".strip()
++        else:
++            if current:
++                chunks.append(current)
++            current = sentence
++    if current:
++        chunks.append(current)
++    return chunks
++
++
++def extract_pdf(pdf_path: Path, block_limit: int) -> dict:
++    doc = fitz.open(pdf_path)
++    blocks = []
++    sections = []
++    sid = 1
++    for page_number, page in enumerate(doc, start=1):
++        page_text = page_text_in_reading_order(page)
++        for raw_block in page_text.split("\n\n"):
++            raw_block = clean_text(raw_block)
++            if len(raw_block) < 20 and not SECTION_RE.match(raw_block):
++                continue
++            for block in split_reading_block(raw_block, block_limit):
++                block_type = "section" if SECTION_RE.match(block) and len(block.split()) <= 10 else "text"
++                block_id = f"S{sid:04d}"
++                item = {
++                    "id": block_id,
++                    "page": page_number,
++                    "type": block_type,
++                    "original": block,
++                    "translation": "",
++                    "confidence": "text-extracted",
++                }
++                blocks.append(item)
++                if block_type == "section":
++                    sections.append({"id": block_id, "page": page_number, "title": block})
++                sid += 1
++    return {
++        "paper": {
++            "title": pdf_path.stem,
++            "pdf_path": str(pdf_path.resolve()),
++            "page_count": len(doc),
++        },
++        "sections": sections,
++        "blocks": blocks,
++    }
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("pdfs", nargs="+", help="PDF files to extract")
++    parser.add_argument("--out-dir", required=True, help="Directory for source maps")
++    parser.add_argument("--block-limit", type=int, default=1300)
++    args = parser.parse_args()
++
++    out_dir = Path(args.out_dir)
++    out_dir.mkdir(parents=True, exist_ok=True)
++    report = []
++    for pdf in args.pdfs:
++        pdf_path = Path(pdf).expanduser().resolve()
++        data = extract_pdf(pdf_path, args.block_limit)
++        paper_dir = out_dir / pdf_path.stem
++        paper_dir.mkdir(parents=True, exist_ok=True)
++        source_map = paper_dir / "source_map.json"
++        source_map.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
++        report.append(
++            {
++                "pdf": str(pdf_path),
++                "source_map": str(source_map),
++                "pages": data["paper"]["page_count"],
++                "blocks": len(data["blocks"]),
++            }
++        )
++    (out_dir / "extraction_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
++    print(json.dumps(report, ensure_ascii=False, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/paper-translate-zotero/paper-translate-zotero/scripts/render_markdown_to_pdf.py b/paper-translate-zotero/paper-translate-zotero/scripts/render_markdown_to_pdf.py
+new file mode 100644
+index 0000000..f2ad5ce
+--- /dev/null
++++ b/paper-translate-zotero/paper-translate-zotero/scripts/render_markdown_to_pdf.py
+@@ -0,0 +1,103 @@
++#!/usr/bin/env python3
++"""Render Markdown files to PDFs with a local Chrome/Edge executable."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import shutil
++import subprocess
++from pathlib import Path
++
++import fitz
++import markdown
++
++
++CSS = """
++@page { size: A4; margin: 18mm 16mm; }
++body {
++  font-family: "Microsoft YaHei", "SimSun", "Noto Serif CJK SC", Arial, sans-serif;
++  font-size: 10.5pt;
++  line-height: 1.58;
++  color: #111;
++}
++h1, h2, h3 { line-height: 1.25; page-break-after: avoid; }
++h1 { font-size: 22pt; margin: 0 0 18pt; }
++h2 { font-size: 16pt; margin: 22pt 0 10pt; border-bottom: 1px solid #ddd; padding-bottom: 4pt; }
++h3 { font-size: 12pt; margin: 16pt 0 8pt; }
++p, li { orphans: 2; widows: 2; }
++pre, code { font-family: Consolas, "Microsoft YaHei Mono", monospace; }
++pre { white-space: pre-wrap; border: 1px solid #ddd; padding: 8pt; background: #fafafa; }
++table { border-collapse: collapse; width: 100%; font-size: 9pt; }
++th, td { border: 1px solid #ccc; padding: 4pt 6pt; vertical-align: top; }
++a { color: #174ea6; text-decoration: none; }
++"""
++
++
++def find_browser(explicit: str | None) -> Path:
++    candidates = []
++    if explicit:
++        candidates.append(Path(explicit))
++    for name in ("chrome", "google-chrome", "chromium", "msedge"):
++        found = shutil.which(name)
++        if found:
++            candidates.append(Path(found))
++    candidates.extend(
++        [
++            Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
++            Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
++            Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
++            Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
++        ]
++    )
++    for candidate in candidates:
++        if candidate.exists():
++            return candidate
++    raise FileNotFoundError("Chrome/Edge executable not found; pass --browser")
++
++
++def render_one(md_path: Path, browser: Path, user_data_dir: Path) -> dict:
++    html_path = md_path.with_suffix(".html")
++    pdf_path = md_path.with_suffix(".pdf")
++    body = markdown.markdown(
++        md_path.read_text(encoding="utf-8"),
++        extensions=["extra", "toc", "sane_lists"],
++        output_format="html5",
++    )
++    html_path.write_text(
++        f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>{CSS}</style></head><body>{body}</body></html>',
++        encoding="utf-8",
++    )
++    user_data_dir.mkdir(parents=True, exist_ok=True)
++    cmd = [
++        str(browser),
++        "--headless=new",
++        "--disable-gpu",
++        "--no-first-run",
++        "--no-default-browser-check",
++        f"--user-data-dir={user_data_dir}",
++        f"--print-to-pdf={pdf_path}",
++        "--print-to-pdf-no-header",
++        html_path.resolve().as_uri(),
++    ]
++    completed = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
++    if completed.returncode != 0:
++        raise RuntimeError(completed.stderr or completed.stdout)
++    doc = fitz.open(pdf_path)
++    return {"markdown": str(md_path), "html": str(html_path), "pdf": str(pdf_path), "pages": len(doc), "bytes": pdf_path.stat().st_size}
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("markdown_files", nargs="+")
++    parser.add_argument("--browser")
++    parser.add_argument("--user-data-dir", default=".paper-translate-browser-profile")
++    args = parser.parse_args()
++
++    browser = find_browser(args.browser)
++    results = [render_one(Path(path).resolve(), browser, Path(args.user_data_dir).resolve()) for path in args.markdown_files]
++    print(json.dumps(results, ensure_ascii=False, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/paper-translate-zotero/paper-translate-zotero/scripts/zotero_connector_import.py b/paper-translate-zotero/paper-translate-zotero/scripts/zotero_connector_import.py
+new file mode 100644
+index 0000000..0fcaf49
+--- /dev/null
++++ b/paper-translate-zotero/paper-translate-zotero/scripts/zotero_connector_import.py
+@@ -0,0 +1,70 @@
++#!/usr/bin/env python3
++"""Import generated files into Zotero through the local Connector server."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import mimetypes
++import socket
++import urllib.error
++import urllib.request
++import uuid
++from pathlib import Path
++
++
++DEFAULT_BASE_URL = "http://127.0.0.1:23119"
++
++
++def post(base_url: str, path: str, data: bytes, headers: dict[str, str], timeout: int = 180) -> tuple[int | str, str]:
++    req = urllib.request.Request(base_url + path, data=data, method="POST")
++    for key, value in headers.items():
++        req.add_header(key, value)
++    req.add_header("X-Zotero-Connector-API-Version", "3")
++    try:
++        with urllib.request.urlopen(req, timeout=timeout) as response:
++            return response.status, response.read().decode("utf-8", "replace")
++    except urllib.error.HTTPError as exc:
++        return exc.code, exc.read().decode("utf-8", "replace")
++    except (TimeoutError, socket.timeout) as exc:
++        return "timeout", str(exc)
++
++
++def import_file(base_url: str, file_path: Path, title: str) -> dict:
++    data = file_path.read_bytes()
++    content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
++    metadata = {
++        "sessionID": "codex-paper-translate-" + uuid.uuid4().hex,
++        "title": title,
++        "url": file_path.resolve().as_uri(),
++    }
++    status, body = post(
++        base_url,
++        "/connector/saveStandaloneAttachment",
++        data,
++        {
++            "Content-Type": content_type,
++            "Content-Length": str(len(data)),
++            "X-Metadata": json.dumps(metadata, ensure_ascii=True),
++        },
++    )
++    return {"title": title, "file": str(file_path.resolve()), "status": status, "body": body}
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("files", nargs="+", help="Files to import")
++    parser.add_argument("--title-prefix", default="中文全文翻译PDF - ")
++    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
++    args = parser.parse_args()
++
++    results = []
++    for file_name in args.files:
++        file_path = Path(file_name).expanduser().resolve()
++        title = args.title_prefix + file_path.stem
++        results.append(import_file(args.base_url, file_path, title))
++    print(json.dumps(results, ensure_ascii=False, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+-- 
+2.50.1.windows.1
+
