@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Translate Zotero"
+  short_description: "Translate Zotero papers into bilingual Markdown/PDF readers"
+  default_prompt: "Translate these Zotero or local PDF papers into consistent Chinese-English full-paper readers and import the PDFs back into Zotero."
